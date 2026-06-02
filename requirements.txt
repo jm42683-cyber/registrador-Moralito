@@ -1,5 +1,6 @@
 streamlit
 pandas
 pytz
+st-theme
 streamlit-gsheets
 reportlab
