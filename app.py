@@ -1,93 +1,110 @@
 import streamlit as st
-import datetime
 import pandas as pd
+from datetime import datetime
 import pytz
 
-# Configuración de página
-st.set_page_config(page_title="Registrador Moralito", page_icon="🎙️", layout="wide")
+# Configuración de zona horaria de Salta/Argentina
+argentina_tz = pytz.timezone('America/Argentina/Salta')
 
-# Zona horaria de Salta
-tz = pytz.timezone('America/Argentina/Salta')
+st.set_page_config(page_title="Registrador Moralito", layout="wide")
 
-st.title("🎙️ Registrador Moralito por Voz")
-st.write("Sistema inteligente de registro histórico y cálculo automático de tiempos muertos.")
+st.title("📊 Registrador Moralito - Planta")
 
-if 'historial' not in st.session_state:
-    st.session_state.historial = []
+# Inicializar base de datos en la sesión
+if 'data' not in st.session_state:
+    st.session_state.data = pd.DataFrame(columns=['Fecha', 'Hora', 'Objeto_Tiempo', 'Equipo', 'Acción', 'Detalle'])
 
-# --- SECCIÓN 1: INGRESO DE DATOS ---
-st.subheader("📝 1. Dictá o escribí la novedad")
-entrada = st.text_input("Presioná el micrófono de tu teclado para dictar:", placeholder="Ej: Bomba 3410 01 paro por cambio de sello")
+# --- 1. REGISTRO DE EVENTOS ---
+st.header("🎙️ 1. Registrar Evento (Voz o Texto)")
+entrada = st.text_input("Dictá o escribí lo que pasó (Ej: clarificador detuvo por falla, bomba 3410 arranco):")
 
-col1, col2, col3 = st.columns(3)
-with col1: btn_guardar = st.button("💾 Registrar Evento")
-with col2: btn_deshacer = st.button("↩️ Borrar Último")
-with col3: btn_limpiar = st.button("🗑️ Vaciar Historial Completo")
-
-if btn_limpiar:
-    st.session_state.historial = []
-    st.rerun()
-
-if btn_deshacer and st.session_state.historial:
-    st.session_state.historial.pop()
-    st.rerun()
-
-if btn_guardar and entrada:
-    ahora = datetime.datetime.now(tz)
-    texto_min = entrada.lower().replace("ó", "o").replace("á", "a").replace("í", "i").replace("é", "e")
+if st.button("Guardar Registro") and entrada:
+    ahora = datetime.now(argentina_tz)
+    fecha_str = ahora.strftime('%d/%m/%Y')
+    hora_str = ahora.strftime('%H:%M:%S')
+    timestamp = ahora.isoformat()
     
-    evento = "REPARACION / OTRO"
-    if any(p in texto_min for p in ["paro", "detuvo", "parada", "corte"]): evento = "PARADA"
-    elif any(a in texto_min for a in ["arranco", "inicio", "marcha", "arranque"]): evento = "ARRANQUE"
+    entrada_minuscula = entrada.lower()
+    
+    # Lógica inteligente de detección de Acción
+    if any(palabra in entrada_minuscula for palabra in ['par', 'deten', 'detuv', 'falla', 'corte', 'stop']):
+        accion = 'PARADA'
+    elif any(palabra in entrada_minuscula for palabra in ['arranc', 'march', 'inic', 'ok', 'run', 'gcha']):
+        accion = 'ARRANQUE'
+    else:
+        accion = 'REPARACION / OTRO'
         
-    palabras = entrada.split()
-    equipo_detected = "General"
-    palabras_min = texto_min.split()
-    indice_corte = len(palabras)
-    for i, p in enumerate(palabras_min):
-        if p in ["paro", "detuvo", "parada", "arranco", "inicio", "marcha", "en", "por"]:
-            indice_corte = i; break
+    # Limpieza inteligente del nombre del Equipo
+    equipo = "GENERAL"
+    if "clarif" in entrada_minuscula:
+        equipo = "CLARIFICADOR"
+    elif "bomba" in entrada_minuscula:
+        if "3410" in entrada_minuscula:
+            equipo = "BOMBA 3410"
+        else:
+            equipo = "BOMBA GENERAL"
             
-    equipo_detected = " ".join(palabras[:indice_corte]).strip(",. ") if indice_corte > 0 else palabras[0]
-
-    st.session_state.historial.append({
-        "Fecha": ahora.strftime("%d/%m/%Y"),
-        "Hora": ahora.strftime("%H:%M:%S"),
-        "Objeto_Tiempo": ahora,
-        "Equipo": equipo_detected.upper(),
-        "Acción": evento,
-        "Detalle": entrada
-    })
-    st.success(f"¡Registrado '{equipo_detected.upper()}'!")
-
-# --- SECCIÓN 2: BUSCADOR Y EDITOR ---
-if st.session_state.historial:
-    df = pd.DataFrame(st.session_state.historial)
-    st.write("---")
-    st.subheader("🔍 2. Buscador y Editor de Histórico")
+    # Agregar a la tabla al principio (más nuevo primero)
+    nueva_fila = pd.DataFrame([{
+        'Fecha': fecha_str,
+        'Hora': hora_str,
+        'Objeto_Tiempo': timestamp,
+        'Equipo': equipo,
+        'Acción': accion,
+        'Detalle': entrada.upper()
+    }])
     
-    filtro = st.text_input("Filtrar por nombre de equipo:")
-    
-    # Filtrar
-    df_mostrar = df[df['Equipo'].str.contains(filtro, case=False, na=False)] if filtro else df
-    
-    # Editor interactivo
-    df_editado = st.data_editor(
-        df_mostrar.sort_values("Objeto_Tiempo", ascending=False),
-        column_config={"Acción": st.column_config.SelectboxColumn("Acción", options=["ARRANQUE", "PARADA", "REPARACION / OTRO"])},
-        use_container_width=True
-    )
+    st.session_state.data = pd.concat([nueva_fila, st.session_state.data], ignore_index=True)
+    st.success(f"Entendido: guardado como {accion} para el equipo {equipo}")
 
-    # --- SECCIÓN 3: TIEMPOS MUERTOS ---
-    st.write("---")
-    st.subheader("⏳ 3. Tiempos Muertos Automatizados")
-    for eq in df['Equipo'].unique():
-        if eq == "GENERAL": continue
-        df_eq = df[df['Equipo'] == eq].sort_values(by="Objeto_Tiempo")
-        parada_detectada = None
-        for idx, row in df_eq.iterrows():
-            if row['Acción'] == "PARADA": parada_detectada = row['Objeto_Tiempo']
-            elif row['Acción'] == "ARRANQUE" and parada_detectada:
-                diff = row['Objeto_Tiempo'] - parada_detectada
-                st.error(f"🔴 **{eq}** parado el {parada_detectada.strftime('%d/%m')} de {parada_detectada.strftime('%H:%M')} a {row['Objeto_Tiempo'].strftime('%H:%M')} (Total: {int(diff.total_seconds()/60)} min.)")
-                parada_detectada = None
+# --- 2. EDITOR EN VIVO Y BORRADO ---
+st.header("🔍 2. Buscador y Editor de Histórico")
+st.info("💡 Cómo borrar una fila: Hacé clic en la casilla de la izquierda de la fila (el índice) para seleccionarla y presioná la tecla 'Supr' (Delete) en tu teclado.")
+
+# El editor ahora permite borrar filas dinámicamente
+st.session_state.data = st.data_editor(
+    st.session_state.data, 
+    num_rows="dynamic",
+    use_container_width=True
+)
+
+# --- 3. TIEMPOS MUERTOS AUTOMÁTICOS ---
+st.header("⏳ 3. Tiempos Muertos Automatizados")
+
+df_tiempos = st.session_state.data.copy()
+if not df_tiempos.empty and len(df_tiempos) > 1:
+    # Ordenar cronológicamente para procesar correctamente las diferencias
+    df_tiempos = df_tiempos.sort_values(by='Objeto_Tiempo', ascending=True)
+    
+    reporte_tiempos = []
+    
+    # Procesar por cada equipo por separado
+    for equipo_nom, grupo in df_tiempos.groupby('Equipo'):
+        ultima_parada = None
+        
+        for idx, fila in grupo.iterrows():
+            if fila['Acción'] == 'PARADA':
+                ultima_parada = fila['Objeto_Tiempo']
+            elif fila['Acción'] == 'ARRANQUE' and ultima_parada is not None:
+                # Calcular la diferencia real
+                t_parada = datetime.fromisoformat(ultima_parada)
+                t_arranque = datetime.fromisoformat(fila['Objeto_Tiempo'])
+                
+                duracion = t_arranque - t_parada
+                minutos_muertos = round(duracion.total_seconds() / 60, 2)
+                
+                if minutos_muertos >= 0:
+                    reporte_tiempos.append({
+                        'Equipo': equipo_nom,
+                        'Desde (Parada)': t_parada.strftime('%H:%M:%S'),
+                        'Hasta (Arranque)': t_arranque.strftime('%H:%M:%S'),
+                        'Duración (Minutos)': minutos_muertos
+                    })
+                ultima_parada = None # Resetear ciclo para la siguiente parada
+                
+    if reporte_tiempos:
+        st.dataframe(pd.DataFrame(reporte_tiempos), use_container_width=True)
+    else:
+        st.info("No hay ciclos completos de 'PARADA' y 'ARRANQUE' válidos para el mismo equipo.")
+else:
+    st.info("Esperando registros suficientes para calcular tiempos muertos.")
